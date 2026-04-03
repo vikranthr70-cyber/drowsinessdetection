@@ -1,8 +1,6 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 
 // MediaPipe Face Mesh eye landmark indices
-// Left eye: 362, 385, 387, 263, 373, 380
-// Right eye: 33, 160, 158, 133, 153, 144
 const LEFT_EYE = [362, 385, 387, 263, 373, 380];
 const RIGHT_EYE = [33, 160, 158, 133, 153, 144];
 
@@ -12,8 +10,7 @@ const LOWER_LIP = 14;
 const MOUTH_LEFT = 78;
 const MOUTH_RIGHT = 308;
 
-// Nose tip and forehead for head tilt
-const NOSE_TIP = 1;
+// Head tilt
 const FOREHEAD = 10;
 const CHIN = 152;
 
@@ -38,6 +35,7 @@ export interface DetectionState {
   headTiltAngle: number;
   events: DrowsinessEvent[];
   faceDetected: boolean;
+  loading: boolean;
 }
 
 const EAR_THRESHOLD = 0.21;
@@ -54,21 +52,39 @@ function calcEAR(landmarks: any[], eyeIndices: number[]): number {
   const vertical1 = euclideanDist(p2, p6);
   const vertical2 = euclideanDist(p3, p5);
   const horizontal = euclideanDist(p1, p4);
+  if (horizontal === 0) return 0.3;
   return (vertical1 + vertical2) / (2.0 * horizontal);
+}
+
+function loadScript(src: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) {
+      resolve();
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = src;
+    script.crossOrigin = "anonymous";
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error(`Failed to load ${src}`));
+    document.head.appendChild(script);
+  });
 }
 
 export function useDrowsinessDetection() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const faceMeshRef = useRef<any>(null);
-  const animFrameRef = useRef<number>(0);
+  const cameraRef = useRef<any>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const runningRef = useRef(false);
 
   const eyeClosedStartRef = useRef<number | null>(null);
   const blinkCountRef = useRef(0);
   const lastBlinkRef = useRef(false);
   const fpsTimesRef = useRef<number[]>([]);
+  const lastAlarmRef = useRef(0);
 
   const [state, setState] = useState<DetectionState>({
     isRunning: false,
@@ -83,25 +99,30 @@ export function useDrowsinessDetection() {
     headTiltAngle: 0,
     events: [],
     faceDetected: false,
+    loading: false,
   });
 
   const playAlarm = useCallback(() => {
+    const now = Date.now();
+    if (now - lastAlarmRef.current < 500) return;
+    lastAlarmRef.current = now;
     try {
-      if (!audioContextRef.current) {
+      if (!audioContextRef.current || audioContextRef.current.state === "closed") {
         audioContextRef.current = new AudioContext();
       }
       const ctx = audioContextRef.current;
+      if (ctx.state === "suspended") ctx.resume();
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.connect(gain);
       gain.connect(ctx.destination);
       osc.frequency.value = 880;
       osc.type = "square";
-      gain.gain.value = 0.3;
+      gain.gain.value = 0.25;
       osc.start();
-      osc.stop(ctx.currentTime + 0.3);
+      osc.stop(ctx.currentTime + 0.25);
     } catch (e) {
-      // Audio may fail silently
+      // ignore
     }
   }, []);
 
@@ -121,6 +142,7 @@ export function useDrowsinessDetection() {
 
   const processResults = useCallback(
     (results: any) => {
+      if (!runningRef.current) return;
       const canvas = canvasRef.current;
       const video = videoRef.current;
       if (!canvas || !video) return;
@@ -128,13 +150,20 @@ export function useDrowsinessDetection() {
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      // Match canvas to video dimensions
+      if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+        canvas.width = video.videoWidth || 640;
+        canvas.height = video.videoHeight || 480;
+      }
 
-      // Draw video frame
-      ctx.drawImage(video, 0, 0);
+      // Draw mirrored video
+      ctx.save();
+      ctx.translate(canvas.width, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      ctx.restore();
 
-      // FPS calculation
+      // FPS
       const now = performance.now();
       fpsTimesRef.current.push(now);
       fpsTimesRef.current = fpsTimesRef.current.filter((t) => now - t < 1000);
@@ -149,12 +178,8 @@ export function useDrowsinessDetection() {
       const w = canvas.width;
       const h = canvas.height;
 
-      // Convert normalized landmarks to pixel coords for drawing
-      const lm = landmarks.map((l: any) => ({ x: l.x * w, y: l.y * h }));
-
-      // Draw face mesh outline
-      ctx.strokeStyle = "hsl(199, 89%, 48%)";
-      ctx.lineWidth = 1;
+      // Mirror x coordinates to match the mirrored video
+      const lm = landmarks.map((l: any) => ({ x: (1 - l.x) * w, y: l.y * h }));
 
       // Draw eye landmarks
       const drawEye = (indices: number[], color: string) => {
@@ -167,8 +192,6 @@ export function useDrowsinessDetection() {
         });
         ctx.closePath();
         ctx.stroke();
-
-        // Draw dots
         indices.forEach((idx) => {
           ctx.beginPath();
           ctx.fillStyle = color;
@@ -177,24 +200,22 @@ export function useDrowsinessDetection() {
         });
       };
 
-      // Calculate EAR
+      // EAR
       const leftEAR = calcEAR(lm, LEFT_EYE);
       const rightEAR = calcEAR(lm, RIGHT_EYE);
       const ear = (leftEAR + rightEAR) / 2;
 
-      // Determine eye state colors
-      const eyeColor = ear < EAR_THRESHOLD ? "hsl(0, 72%, 51%)" : "hsl(142, 71%, 45%)";
+      const eyeColor = ear < EAR_THRESHOLD ? "#ef4444" : "#22c55e";
       drawEye(LEFT_EYE, eyeColor);
       drawEye(RIGHT_EYE, eyeColor);
 
-      // Mouth open ratio (yawn detection)
+      // Mouth
       const mouthVertical = euclideanDist(lm[UPPER_LIP], lm[LOWER_LIP]);
       const mouthHorizontal = euclideanDist(lm[MOUTH_LEFT], lm[MOUTH_RIGHT]);
-      const mouthOpenRatio = mouthVertical / mouthHorizontal;
+      const mouthOpenRatio = mouthHorizontal > 0 ? mouthVertical / mouthHorizontal : 0;
       const isYawning = mouthOpenRatio > YAWN_THRESHOLD;
 
-      // Draw mouth landmarks
-      const mouthColor = isYawning ? "hsl(38, 92%, 50%)" : "hsl(199, 89%, 48%)";
+      const mouthColor = isYawning ? "#eab308" : "#0ea5e9";
       [UPPER_LIP, LOWER_LIP, MOUTH_LEFT, MOUTH_RIGHT].forEach((idx) => {
         ctx.beginPath();
         ctx.fillStyle = mouthColor;
@@ -202,8 +223,7 @@ export function useDrowsinessDetection() {
         ctx.fill();
       });
 
-      // Head tilt detection
-      const noseTip = lm[NOSE_TIP];
+      // Head tilt
       const forehead = lm[FOREHEAD];
       const chin = lm[CHIN];
       const headTiltAngle = Math.abs(
@@ -211,7 +231,7 @@ export function useDrowsinessDetection() {
       );
       const isHeadTilted = headTiltAngle > HEAD_TILT_THRESHOLD;
 
-      // Blink counting
+      // Blinks
       const eyesClosed = ear < EAR_THRESHOLD;
       if (!eyesClosed && lastBlinkRef.current) {
         blinkCountRef.current++;
@@ -221,9 +241,7 @@ export function useDrowsinessDetection() {
       // Eye closed duration
       let eyeClosedDuration = 0;
       if (eyesClosed) {
-        if (!eyeClosedStartRef.current) {
-          eyeClosedStartRef.current = now;
-        }
+        if (!eyeClosedStartRef.current) eyeClosedStartRef.current = now;
         eyeClosedDuration = now - eyeClosedStartRef.current;
       } else {
         eyeClosedStartRef.current = null;
@@ -231,7 +249,7 @@ export function useDrowsinessDetection() {
 
       const isDrowsy = eyeClosedDuration >= EYE_CLOSED_THRESHOLD_MS;
 
-      // Draw face bounding box
+      // Face bounding box
       const xs = lm.map((l: any) => l.x);
       const ys = lm.map((l: any) => l.y);
       const minX = Math.min(...xs);
@@ -239,18 +257,34 @@ export function useDrowsinessDetection() {
       const minY = Math.min(...ys);
       const maxY = Math.max(...ys);
       const pad = 20;
-
-      ctx.strokeStyle = isDrowsy ? "hsl(0, 72%, 51%)" : "hsl(199, 89%, 48%)";
+      ctx.strokeStyle = isDrowsy ? "#ef4444" : "#0ea5e9";
       ctx.lineWidth = 2;
+      ctx.setLineDash([8, 4]);
       ctx.strokeRect(minX - pad, minY - pad, maxX - minX + pad * 2, maxY - minY + pad * 2);
+      ctx.setLineDash([]);
 
-      // Trigger alerts
-      if (isDrowsy) {
-        playAlarm();
-      }
+      // Label
+      ctx.font = "bold 14px Inter, sans-serif";
+      ctx.fillStyle = isDrowsy ? "#ef4444" : "#22c55e";
+      ctx.fillText(
+        isDrowsy ? "⚠ DROWSY" : "✓ Alert",
+        minX - pad,
+        minY - pad - 8
+      );
+
+      // EAR label
+      ctx.font = "12px JetBrains Mono, monospace";
+      ctx.fillStyle = "#0ea5e9";
+      ctx.fillText(`EAR: ${ear.toFixed(3)}`, minX - pad, maxY + pad + 20);
+
+      if (isDrowsy) playAlarm();
 
       setState((prev) => {
-        const newState: DetectionState = {
+        if (isDrowsy && !prev.isDrowsy) addEvent("drowsiness", ear, eyeClosedDuration);
+        if (isYawning && !prev.isYawning) addEvent("yawn");
+        if (isHeadTilted && !prev.isHeadTilted) addEvent("head_tilt");
+
+        return {
           ...prev,
           ear: Math.round(ear * 1000) / 1000,
           fps,
@@ -263,41 +297,36 @@ export function useDrowsinessDetection() {
           headTiltAngle: Math.round(headTiltAngle * 10) / 10,
           faceDetected: true,
         };
-
-        // Log events
-        if (isDrowsy && !prev.isDrowsy) {
-          addEvent("drowsiness", ear, eyeClosedDuration);
-        }
-        if (isYawning && !prev.isYawning) {
-          addEvent("yawn");
-        }
-        if (isHeadTilted && !prev.isHeadTilted) {
-          addEvent("head_tilt");
-        }
-
-        return newState;
       });
     },
     [playAlarm, addEvent]
   );
 
   const start = useCallback(async () => {
+    setState((prev) => ({ ...prev, loading: true }));
+
     try {
+      // Load MediaPipe scripts from CDN
+      await loadScript("https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js");
+      await loadScript("https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js");
+
+      const win = window as any;
+
+      // Get webcam
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: 640, height: 480, facingMode: "user" },
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
+        audio: false,
       });
       streamRef.current = stream;
 
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-      }
+      const video = videoRef.current!;
+      video.srcObject = stream;
+      video.playsInline = true;
+      video.muted = true;
+      await video.play();
 
-      // Load MediaPipe
-      const { FaceMesh } = await import("@mediapipe/face_mesh");
-      const { Camera } = await import("@mediapipe/camera_utils");
-
-      const faceMesh = new FaceMesh({
+      // Init FaceMesh
+      const faceMesh = new win.FaceMesh({
         locateFile: (file: string) =>
           `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
       });
@@ -312,30 +341,48 @@ export function useDrowsinessDetection() {
       faceMesh.onResults(processResults);
       faceMeshRef.current = faceMesh;
 
-      const camera = new Camera(videoRef.current!, {
+      runningRef.current = true;
+
+      // Start camera loop
+      const camera = new win.Camera(video, {
         onFrame: async () => {
-          await faceMesh.send({ image: videoRef.current! });
+          if (!runningRef.current) return;
+          try {
+            await faceMesh.send({ image: video });
+          } catch (e) {
+            // ignore frame errors
+          }
         },
         width: 640,
         height: 480,
       });
 
-      camera.start();
+      cameraRef.current = camera;
+      await camera.start();
 
-      setState((prev) => ({ ...prev, isRunning: true }));
+      setState((prev) => ({ ...prev, isRunning: true, loading: false }));
     } catch (err) {
       console.error("Failed to start detection:", err);
+      setState((prev) => ({ ...prev, loading: false }));
     }
   }, [processResults]);
 
   const stop = useCallback(() => {
+    runningRef.current = false;
+
+    if (cameraRef.current) {
+      try { cameraRef.current.stop(); } catch (e) { /* ignore */ }
+      cameraRef.current = null;
+    }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
-    if (animFrameRef.current) {
-      cancelAnimationFrame(animFrameRef.current);
+    if (faceMeshRef.current) {
+      try { faceMeshRef.current.close(); } catch (e) { /* ignore */ }
+      faceMeshRef.current = null;
     }
+
     blinkCountRef.current = 0;
     eyeClosedStartRef.current = null;
 
@@ -350,13 +397,12 @@ export function useDrowsinessDetection() {
       fps: 0,
       blinkCount: 0,
       eyeClosedDuration: 0,
+      loading: false,
     }));
   }, []);
 
   useEffect(() => {
-    return () => {
-      stop();
-    };
+    return () => { stop(); };
   }, [stop]);
 
   return { videoRef, canvasRef, state, start, stop };
