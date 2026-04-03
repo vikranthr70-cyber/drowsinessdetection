@@ -69,8 +69,14 @@ const Index = () => {
             onClick={state.isRunning ? stop : start}
             variant={state.isRunning ? "destructive" : "default"}
             className="gap-2"
+            disabled={state.loading}
           >
-            {state.isRunning ? (
+            {state.loading ? (
+              <>
+                <div className="w-4 h-4 border-2 border-primary-foreground/30 border-t-primary-foreground rounded-full animate-spin" />
+                Loading Model...
+              </>
+            ) : state.isRunning ? (
               <>
                 <CameraOff className="w-4 h-4" />
                 Stop
