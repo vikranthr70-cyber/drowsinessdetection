@@ -96,36 +96,54 @@ const Index = () => {
         {/* Video Feed */}
         <div className="lg:col-span-2">
           <div className="glass-panel p-1 relative overflow-hidden">
-            <AlertOverlay
-              isDrowsy={state.isDrowsy}
-              isYawning={state.isYawning}
-              isHeadTilted={state.isHeadTilted}
-            />
+            <div className="relative aspect-video rounded-lg overflow-hidden bg-muted">
+              <video
+                ref={videoRef}
+                className="h-full w-full object-cover scale-x-[-1]"
+                playsInline
+                muted
+                autoPlay
+              />
 
-            {/* Hidden video element for MediaPipe */}
-            <video ref={videoRef} className="hidden" playsInline muted />
+              <canvas
+                ref={canvasRef}
+                className="absolute inset-0 h-full w-full pointer-events-none"
+              />
 
-            {/* Canvas with detection overlay */}
-            <canvas
-              ref={canvasRef}
-              className="w-full rounded-lg bg-muted aspect-video"
-            />
+              <AlertOverlay
+                isDrowsy={state.isDrowsy}
+                isYawning={state.isYawning}
+                isHeadTilted={state.isHeadTilted}
+              />
 
-            {!state.isRunning && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-muted/50 backdrop-blur-sm rounded-lg">
-                <MonitorSpeaker className="w-16 h-16 text-muted-foreground/50" />
-                <p className="text-muted-foreground text-sm">
-                  Click "Start Detection" to begin monitoring
-                </p>
-              </div>
-            )}
+              {!state.isRunning && !state.loading && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-muted/50 backdrop-blur-sm rounded-lg">
+                  <MonitorSpeaker className="w-16 h-16 text-muted-foreground/50" />
+                  <p className="text-muted-foreground text-sm">
+                    Click "Start Detection" to begin monitoring
+                  </p>
+                </div>
+              )}
 
-            {/* FPS Badge */}
-            {state.isRunning && (
-              <div className="absolute top-3 left-3 bg-card/80 backdrop-blur-sm px-2 py-1 rounded-md text-xs font-mono text-muted-foreground">
-                {state.fps} FPS
-              </div>
-            )}
+              {state.loading && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-background/70 backdrop-blur-sm rounded-lg">
+                  <div className="w-10 h-10 rounded-full border-2 border-primary/20 border-t-primary animate-spin" />
+                  <p className="text-sm text-muted-foreground">Starting camera and loading face tracking…</p>
+                </div>
+              )}
+
+              {state.isRunning && !state.faceDetected && !state.loading && (
+                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 glass-panel px-4 py-2 text-xs text-muted-foreground">
+                  Center your face in the frame and keep good lighting.
+                </div>
+              )}
+
+              {state.isRunning && (
+                <div className="absolute top-3 left-3 bg-card/80 backdrop-blur-sm px-2 py-1 rounded-md text-xs font-mono text-muted-foreground">
+                  {state.fps} FPS
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Stats Grid */}

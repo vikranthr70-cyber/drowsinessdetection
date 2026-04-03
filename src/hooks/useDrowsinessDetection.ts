@@ -1,18 +1,21 @@
 import { useRef, useState, useCallback, useEffect } from "react";
 
-// MediaPipe Face Mesh eye landmark indices
 const LEFT_EYE = [362, 385, 387, 263, 373, 380];
 const RIGHT_EYE = [33, 160, 158, 133, 153, 144];
-
-// Mouth landmarks for yawn detection
 const UPPER_LIP = 13;
 const LOWER_LIP = 14;
 const MOUTH_LEFT = 78;
 const MOUTH_RIGHT = 308;
-
-// Head tilt
 const FOREHEAD = 10;
 const CHIN = 152;
+
+const COLORS = {
+  primary: "hsl(199 89% 48%)",
+  success: "hsl(142 71% 45%)",
+  warning: "hsl(38 92% 50%)",
+  danger: "hsl(0 72% 51%)",
+  text: "hsl(210 20% 92%)",
+};
 
 export interface DrowsinessEvent {
   id: string;
@@ -47,25 +50,34 @@ function euclideanDist(p1: { x: number; y: number }, p2: { x: number; y: number 
   return Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2);
 }
 
-function calcEAR(landmarks: any[], eyeIndices: number[]): number {
+function calcEAR(landmarks: Array<{ x: number; y: number }>, eyeIndices: number[]): number {
   const [p1, p2, p3, p4, p5, p6] = eyeIndices.map((i) => landmarks[i]);
   const vertical1 = euclideanDist(p2, p6);
   const vertical2 = euclideanDist(p3, p5);
   const horizontal = euclideanDist(p1, p4);
   if (horizontal === 0) return 0.3;
-  return (vertical1 + vertical2) / (2.0 * horizontal);
+  return (vertical1 + vertical2) / (2 * horizontal);
 }
 
 function loadScript(src: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) {
-      resolve();
+    const existing = document.querySelector(`script[src="${src}"]`) as HTMLScriptElement | null;
+    if (existing) {
+      if (existing.dataset.loaded === "true") resolve();
+      else {
+        existing.addEventListener("load", () => resolve(), { once: true });
+        existing.addEventListener("error", () => reject(new Error(`Failed to load ${src}`)), { once: true });
+      }
       return;
     }
+
     const script = document.createElement("script");
     script.src = src;
     script.crossOrigin = "anonymous";
-    script.onload = () => resolve();
+    script.onload = () => {
+      script.dataset.loaded = "true";
+      resolve();
+    };
     script.onerror = () => reject(new Error(`Failed to load ${src}`));
     document.head.appendChild(script);
   });
@@ -106,23 +118,26 @@ export function useDrowsinessDetection() {
     const now = Date.now();
     if (now - lastAlarmRef.current < 500) return;
     lastAlarmRef.current = now;
+
     try {
       if (!audioContextRef.current || audioContextRef.current.state === "closed") {
         audioContextRef.current = new AudioContext();
       }
+
       const ctx = audioContextRef.current;
-      if (ctx.state === "suspended") ctx.resume();
-      const osc = ctx.createOscillator();
+      if (ctx.state === "suspended") void ctx.resume();
+
+      const oscillator = ctx.createOscillator();
       const gain = ctx.createGain();
-      osc.connect(gain);
+      oscillator.connect(gain);
       gain.connect(ctx.destination);
-      osc.frequency.value = 880;
-      osc.type = "square";
-      gain.gain.value = 0.25;
-      osc.start();
-      osc.stop(ctx.currentTime + 0.25);
-    } catch (e) {
-      // ignore
+      oscillator.frequency.value = 880;
+      oscillator.type = "square";
+      gain.gain.value = 0.22;
+      oscillator.start();
+      oscillator.stop(ctx.currentTime + 0.25);
+    } catch {
+      // Ignore audio issues silently
     }
   }, []);
 
@@ -134,15 +149,24 @@ export function useDrowsinessDetection() {
       ear,
       duration,
     };
+
     setState((prev) => ({
       ...prev,
       events: [event, ...prev.events].slice(0, 50),
     }));
   }, []);
 
+  const clearOverlay = useCallback(() => {
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }, []);
+
   const processResults = useCallback(
     (results: any) => {
       if (!runningRef.current) return;
+
       const canvas = canvasRef.current;
       const video = videoRef.current;
       if (!canvas || !video) return;
@@ -150,26 +174,21 @@ export function useDrowsinessDetection() {
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
-      // Match canvas to video dimensions
+      if (!video.videoWidth || !video.videoHeight) return;
+
       if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
-        canvas.width = video.videoWidth || 640;
-        canvas.height = video.videoHeight || 480;
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
       }
 
-      // Draw mirrored video
-      ctx.save();
-      ctx.translate(canvas.width, 0);
-      ctx.scale(-1, 1);
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      ctx.restore();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // FPS
       const now = performance.now();
       fpsTimesRef.current.push(now);
       fpsTimesRef.current = fpsTimesRef.current.filter((t) => now - t < 1000);
       const fps = fpsTimesRef.current.length;
 
-      if (!results.multiFaceLandmarks || results.multiFaceLandmarks.length === 0) {
+      if (!results.multiFaceLandmarks?.length) {
         setState((prev) => ({ ...prev, fps, faceDetected: false }));
         return;
       }
@@ -177,68 +196,59 @@ export function useDrowsinessDetection() {
       const landmarks = results.multiFaceLandmarks[0];
       const w = canvas.width;
       const h = canvas.height;
+      const lm = landmarks.map((point: any) => ({ x: (1 - point.x) * w, y: point.y * h }));
 
-      // Mirror x coordinates to match the mirrored video
-      const lm = landmarks.map((l: any) => ({ x: (1 - l.x) * w, y: l.y * h }));
-
-      // Draw eye landmarks
-      const drawEye = (indices: number[], color: string) => {
+      const drawPolyline = (indices: number[], color: string) => {
         ctx.beginPath();
         ctx.strokeStyle = color;
         ctx.lineWidth = 2;
-        indices.forEach((idx, i) => {
-          if (i === 0) ctx.moveTo(lm[idx].x, lm[idx].y);
-          else ctx.lineTo(lm[idx].x, lm[idx].y);
+        indices.forEach((idx, index) => {
+          const point = lm[idx];
+          if (index === 0) ctx.moveTo(point.x, point.y);
+          else ctx.lineTo(point.x, point.y);
         });
         ctx.closePath();
         ctx.stroke();
+      };
+
+      const drawPoints = (indices: number[], color: string, radius = 3) => {
+        ctx.fillStyle = color;
         indices.forEach((idx) => {
+          const point = lm[idx];
           ctx.beginPath();
-          ctx.fillStyle = color;
-          ctx.arc(lm[idx].x, lm[idx].y, 3, 0, Math.PI * 2);
+          ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
           ctx.fill();
         });
       };
 
-      // EAR
       const leftEAR = calcEAR(lm, LEFT_EYE);
       const rightEAR = calcEAR(lm, RIGHT_EYE);
       const ear = (leftEAR + rightEAR) / 2;
+      const eyesClosed = ear < EAR_THRESHOLD;
+      const eyeColor = eyesClosed ? COLORS.danger : COLORS.success;
 
-      const eyeColor = ear < EAR_THRESHOLD ? "#ef4444" : "#22c55e";
-      drawEye(LEFT_EYE, eyeColor);
-      drawEye(RIGHT_EYE, eyeColor);
+      drawPolyline(LEFT_EYE, eyeColor);
+      drawPolyline(RIGHT_EYE, eyeColor);
+      drawPoints(LEFT_EYE, eyeColor);
+      drawPoints(RIGHT_EYE, eyeColor);
 
-      // Mouth
       const mouthVertical = euclideanDist(lm[UPPER_LIP], lm[LOWER_LIP]);
       const mouthHorizontal = euclideanDist(lm[MOUTH_LEFT], lm[MOUTH_RIGHT]);
       const mouthOpenRatio = mouthHorizontal > 0 ? mouthVertical / mouthHorizontal : 0;
       const isYawning = mouthOpenRatio > YAWN_THRESHOLD;
+      const mouthColor = isYawning ? COLORS.warning : COLORS.primary;
+      drawPoints([UPPER_LIP, LOWER_LIP, MOUTH_LEFT, MOUTH_RIGHT], mouthColor);
 
-      const mouthColor = isYawning ? "#eab308" : "#0ea5e9";
-      [UPPER_LIP, LOWER_LIP, MOUTH_LEFT, MOUTH_RIGHT].forEach((idx) => {
-        ctx.beginPath();
-        ctx.fillStyle = mouthColor;
-        ctx.arc(lm[idx].x, lm[idx].y, 3, 0, Math.PI * 2);
-        ctx.fill();
-      });
-
-      // Head tilt
       const forehead = lm[FOREHEAD];
       const chin = lm[CHIN];
-      const headTiltAngle = Math.abs(
-        Math.atan2(forehead.x - chin.x, forehead.y - chin.y) * (180 / Math.PI)
-      );
+      const headTiltAngle = Math.abs(Math.atan2(forehead.x - chin.x, forehead.y - chin.y) * (180 / Math.PI));
       const isHeadTilted = headTiltAngle > HEAD_TILT_THRESHOLD;
 
-      // Blinks
-      const eyesClosed = ear < EAR_THRESHOLD;
       if (!eyesClosed && lastBlinkRef.current) {
-        blinkCountRef.current++;
+        blinkCountRef.current += 1;
       }
       lastBlinkRef.current = eyesClosed;
 
-      // Eye closed duration
       let eyeClosedDuration = 0;
       if (eyesClosed) {
         if (!eyeClosedStartRef.current) eyeClosedStartRef.current = now;
@@ -249,33 +259,26 @@ export function useDrowsinessDetection() {
 
       const isDrowsy = eyeClosedDuration >= EYE_CLOSED_THRESHOLD_MS;
 
-      // Face bounding box
-      const xs = lm.map((l: any) => l.x);
-      const ys = lm.map((l: any) => l.y);
-      const minX = Math.min(...xs);
-      const maxX = Math.max(...xs);
-      const minY = Math.min(...ys);
-      const maxY = Math.max(...ys);
-      const pad = 20;
-      ctx.strokeStyle = isDrowsy ? "#ef4444" : "#0ea5e9";
+      const xs = lm.map((point: { x: number }) => point.x);
+      const ys = lm.map((point: { y: number }) => point.y);
+      const minX = Math.max(0, Math.min(...xs) - 20);
+      const maxX = Math.min(w, Math.max(...xs) + 20);
+      const minY = Math.max(0, Math.min(...ys) - 20);
+      const maxY = Math.min(h, Math.max(...ys) + 20);
+
+      ctx.strokeStyle = isDrowsy ? COLORS.danger : COLORS.primary;
       ctx.lineWidth = 2;
       ctx.setLineDash([8, 4]);
-      ctx.strokeRect(minX - pad, minY - pad, maxX - minX + pad * 2, maxY - minY + pad * 2);
+      ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
       ctx.setLineDash([]);
 
-      // Label
-      ctx.font = "bold 14px Inter, sans-serif";
-      ctx.fillStyle = isDrowsy ? "#ef4444" : "#22c55e";
-      ctx.fillText(
-        isDrowsy ? "⚠ DROWSY" : "✓ Alert",
-        minX - pad,
-        minY - pad - 8
-      );
+      ctx.font = "700 14px Inter, sans-serif";
+      ctx.fillStyle = isDrowsy ? COLORS.danger : COLORS.success;
+      ctx.fillText(isDrowsy ? "DROWSINESS ALERT" : "Face detected", minX, Math.max(18, minY - 8));
 
-      // EAR label
-      ctx.font = "12px JetBrains Mono, monospace";
-      ctx.fillStyle = "#0ea5e9";
-      ctx.fillText(`EAR: ${ear.toFixed(3)}`, minX - pad, maxY + pad + 20);
+      ctx.font = "600 12px 'JetBrains Mono', monospace";
+      ctx.fillStyle = COLORS.primary;
+      ctx.fillText(`EAR ${ear.toFixed(3)}`, minX, Math.min(h - 10, maxY + 18));
 
       if (isDrowsy) playAlarm();
 
@@ -299,71 +302,82 @@ export function useDrowsinessDetection() {
         };
       });
     },
-    [playAlarm, addEvent]
+    [addEvent, clearOverlay, playAlarm]
   );
 
   const start = useCallback(async () => {
     setState((prev) => ({ ...prev, loading: true }));
 
     try {
-      // Load MediaPipe scripts from CDN
       await loadScript("https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js");
       await loadScript("https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js");
 
       const win = window as any;
+      if (!win.FaceMesh || !win.Camera) {
+        throw new Error("MediaPipe failed to initialize");
+      }
 
-      // Get webcam
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: "user" },
+        video: {
+          facingMode: "user",
+          width: { ideal: 960 },
+          height: { ideal: 540 },
+        },
         audio: false,
       });
+
       streamRef.current = stream;
 
-      const video = videoRef.current!;
+      const video = videoRef.current;
+      if (!video) throw new Error("Video element not found");
+
       video.srcObject = stream;
-      video.playsInline = true;
       video.muted = true;
+      video.playsInline = true;
+      video.autoplay = true;
+
+      await new Promise<void>((resolve) => {
+        if (video.readyState >= 1) {
+          resolve();
+          return;
+        }
+        video.onloadedmetadata = () => resolve();
+      });
+
       await video.play();
 
-      // Init FaceMesh
       const faceMesh = new win.FaceMesh({
-        locateFile: (file: string) =>
-          `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
+        locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`,
       });
 
       faceMesh.setOptions({
         maxNumFaces: 1,
         refineLandmarks: true,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5,
+        minDetectionConfidence: 0.35,
+        minTrackingConfidence: 0.35,
       });
 
       faceMesh.onResults(processResults);
       faceMeshRef.current = faceMesh;
-
       runningRef.current = true;
 
-      // Start camera loop
       const camera = new win.Camera(video, {
         onFrame: async () => {
           if (!runningRef.current) return;
-          try {
-            await faceMesh.send({ image: video });
-          } catch (e) {
-            // ignore frame errors
-          }
+          await faceMesh.send({ image: video });
         },
-        width: 640,
-        height: 480,
+        width: video.videoWidth || 960,
+        height: video.videoHeight || 540,
       });
 
       cameraRef.current = camera;
       await camera.start();
 
       setState((prev) => ({ ...prev, isRunning: true, loading: false }));
-    } catch (err) {
-      console.error("Failed to start detection:", err);
-      setState((prev) => ({ ...prev, loading: false }));
+    } catch (error) {
+      console.error("Failed to start detection:", error);
+      runningRef.current = false;
+      setState((prev) => ({ ...prev, isRunning: false, loading: false, faceDetected: false }));
     }
   }, [processResults]);
 
@@ -371,20 +385,38 @@ export function useDrowsinessDetection() {
     runningRef.current = false;
 
     if (cameraRef.current) {
-      try { cameraRef.current.stop(); } catch (e) { /* ignore */ }
+      try {
+        cameraRef.current.stop();
+      } catch {
+        // ignore
+      }
       cameraRef.current = null;
     }
+
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
     }
+
     if (faceMeshRef.current) {
-      try { faceMeshRef.current.close(); } catch (e) { /* ignore */ }
+      try {
+        faceMeshRef.current.close();
+      } catch {
+        // ignore
+      }
       faceMeshRef.current = null;
+    }
+
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.srcObject = null;
     }
 
     blinkCountRef.current = 0;
     eyeClosedStartRef.current = null;
+    lastBlinkRef.current = false;
+    fpsTimesRef.current = [];
+    clearOverlay();
 
     setState((prev) => ({
       ...prev,
@@ -392,18 +424,18 @@ export function useDrowsinessDetection() {
       isDrowsy: false,
       isYawning: false,
       isHeadTilted: false,
-      faceDetected: false,
       ear: 0,
       fps: 0,
       blinkCount: 0,
       eyeClosedDuration: 0,
+      mouthOpenRatio: 0,
+      headTiltAngle: 0,
+      faceDetected: false,
       loading: false,
     }));
-  }, []);
+  }, [clearOverlay]);
 
-  useEffect(() => {
-    return () => { stop(); };
-  }, [stop]);
+  useEffect(() => () => stop(), [stop]);
 
   return { videoRef, canvasRef, state, start, stop };
 }
