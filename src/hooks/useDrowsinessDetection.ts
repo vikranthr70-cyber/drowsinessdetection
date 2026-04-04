@@ -122,7 +122,7 @@ export function useDrowsinessDetection() {
 
   const playAlarm = useCallback(() => {
     const now = Date.now();
-    if (now - lastAlarmRef.current < 500) return;
+    if (now - lastAlarmRef.current < 800) return;
     lastAlarmRef.current = now;
 
     try {
@@ -133,15 +133,19 @@ export function useDrowsinessDetection() {
       const ctx = audioContextRef.current;
       if (ctx.state === "suspended") void ctx.resume();
 
-      const oscillator = ctx.createOscillator();
+      // Siren effect: sweep between two frequencies
+      const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      oscillator.connect(gain);
+      osc.connect(gain);
       gain.connect(ctx.destination);
-      oscillator.frequency.value = 880;
-      oscillator.type = "square";
-      gain.gain.value = 0.22;
-      oscillator.start();
-      oscillator.stop(ctx.currentTime + 0.25);
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(600, ctx.currentTime);
+      osc.frequency.linearRampToValueAtTime(1200, ctx.currentTime + 0.3);
+      osc.frequency.linearRampToValueAtTime(600, ctx.currentTime + 0.6);
+      gain.gain.setValueAtTime(0.18, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.7);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.7);
     } catch {
       // Ignore audio issues silently
     }
