@@ -113,7 +113,6 @@ const Index = () => {
               <AlertOverlay
                 isDrowsy={state.isDrowsy}
                 isYawning={state.isYawning}
-                isHeadTilted={state.isHeadTilted}
               />
 
               {!state.isRunning && !state.loading && (
