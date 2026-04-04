@@ -297,9 +297,13 @@ export function useDrowsinessDetection() {
         if (isYawning && !prev.isYawning) addEvent("yawn");
         if (isHeadTilted && !prev.isHeadTilted) addEvent("head_tilt");
 
+        const roundedEar = Math.round(ear * 1000) / 1000;
+        const newPoint: EarDataPoint = { time: Date.now(), ear: roundedEar };
+        const earHistory = [...prev.earHistory, newPoint].slice(-60);
+
         return {
           ...prev,
-          ear: Math.round(ear * 1000) / 1000,
+          ear: roundedEar,
           fps,
           blinkCount: blinkCountRef.current,
           eyeClosedDuration: Math.round(eyeClosedDuration),
@@ -309,6 +313,7 @@ export function useDrowsinessDetection() {
           mouthOpenRatio: Math.round(mouthOpenRatio * 100) / 100,
           headTiltAngle: Math.round(headTiltAngle * 10) / 10,
           faceDetected: true,
+          earHistory,
         };
       });
     },
