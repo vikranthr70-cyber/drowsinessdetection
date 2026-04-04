@@ -25,6 +25,11 @@ export interface DrowsinessEvent {
   ear?: number;
 }
 
+export interface EarDataPoint {
+  time: number;
+  ear: number;
+}
+
 export interface DetectionState {
   isRunning: boolean;
   isDrowsy: boolean;
@@ -39,6 +44,7 @@ export interface DetectionState {
   events: DrowsinessEvent[];
   faceDetected: boolean;
   loading: boolean;
+  earHistory: EarDataPoint[];
 }
 
 const EAR_THRESHOLD = 0.21;
@@ -112,11 +118,12 @@ export function useDrowsinessDetection() {
     events: [],
     faceDetected: false,
     loading: false,
+    earHistory: [],
   });
 
   const playAlarm = useCallback(() => {
     const now = Date.now();
-    if (now - lastAlarmRef.current < 500) return;
+    if (now - lastAlarmRef.current < 800) return;
     lastAlarmRef.current = now;
 
     try {
@@ -127,15 +134,19 @@ export function useDrowsinessDetection() {
       const ctx = audioContextRef.current;
       if (ctx.state === "suspended") void ctx.resume();
 
-      const oscillator = ctx.createOscillator();
+      // Siren effect: sweep between two frequencies
+      const osc = ctx.createOscillator();
       const gain = ctx.createGain();
-      oscillator.connect(gain);
+      osc.connect(gain);
       gain.connect(ctx.destination);
-      oscillator.frequency.value = 880;
-      oscillator.type = "square";
-      gain.gain.value = 0.22;
-      oscillator.start();
-      oscillator.stop(ctx.currentTime + 0.25);
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(600, ctx.currentTime);
+      osc.frequency.linearRampToValueAtTime(1200, ctx.currentTime + 0.3);
+      osc.frequency.linearRampToValueAtTime(600, ctx.currentTime + 0.6);
+      gain.gain.setValueAtTime(0.18, ctx.currentTime);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.7);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.7);
     } catch {
       // Ignore audio issues silently
     }
@@ -287,9 +298,13 @@ export function useDrowsinessDetection() {
         if (isYawning && !prev.isYawning) addEvent("yawn");
         if (isHeadTilted && !prev.isHeadTilted) addEvent("head_tilt");
 
+        const roundedEar = Math.round(ear * 1000) / 1000;
+        const newPoint: EarDataPoint = { time: Date.now(), ear: roundedEar };
+        const earHistory = [...prev.earHistory, newPoint].slice(-60);
+
         return {
           ...prev,
-          ear: Math.round(ear * 1000) / 1000,
+          ear: roundedEar,
           fps,
           blinkCount: blinkCountRef.current,
           eyeClosedDuration: Math.round(eyeClosedDuration),
@@ -299,6 +314,7 @@ export function useDrowsinessDetection() {
           mouthOpenRatio: Math.round(mouthOpenRatio * 100) / 100,
           headTiltAngle: Math.round(headTiltAngle * 10) / 10,
           faceDetected: true,
+          earHistory,
         };
       });
     },

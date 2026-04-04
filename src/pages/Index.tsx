@@ -1,6 +1,7 @@
 import { useDrowsinessDetection } from "@/hooks/useDrowsinessDetection";
 import { StatCard } from "@/components/StatCard";
 import { EventLog } from "@/components/EventLog";
+import { EarChart } from "@/components/EarChart";
 import { AlertOverlay } from "@/components/AlertOverlay";
 import { Button } from "@/components/ui/button";
 import {
@@ -185,9 +186,12 @@ const Index = () => {
           </div>
         </div>
 
-        {/* Event Log Sidebar */}
-        <div className="lg:col-span-1 min-h-[400px]">
-          <EventLog events={state.events} />
+        {/* Sidebar: Chart + Event Log */}
+        <div className="lg:col-span-1 flex flex-col gap-4">
+          <EarChart data={state.earHistory} />
+          <div className="min-h-[250px]">
+            <EventLog events={state.events} />
+          </div>
         </div>
       </div>
 
