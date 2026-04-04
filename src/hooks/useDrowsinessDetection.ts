@@ -118,6 +118,7 @@ export function useDrowsinessDetection() {
     events: [],
     faceDetected: false,
     loading: false,
+    earHistory: [],
   });
 
   const playAlarm = useCallback(() => {
