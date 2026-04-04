@@ -25,6 +25,11 @@ export interface DrowsinessEvent {
   ear?: number;
 }
 
+export interface EarDataPoint {
+  time: number;
+  ear: number;
+}
+
 export interface DetectionState {
   isRunning: boolean;
   isDrowsy: boolean;
@@ -39,6 +44,7 @@ export interface DetectionState {
   events: DrowsinessEvent[];
   faceDetected: boolean;
   loading: boolean;
+  earHistory: EarDataPoint[];
 }
 
 const EAR_THRESHOLD = 0.21;
