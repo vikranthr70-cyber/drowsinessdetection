@@ -1,6 +1,7 @@
 import { useDrowsinessDetection } from "@/hooks/useDrowsinessDetection";
 import { StatCard } from "@/components/StatCard";
 import { EventLog } from "@/components/EventLog";
+import { EarChart } from "@/components/EarChart";
 import { AlertOverlay } from "@/components/AlertOverlay";
 import { Button } from "@/components/ui/button";
 import {
