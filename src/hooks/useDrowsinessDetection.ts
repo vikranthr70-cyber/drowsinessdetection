@@ -134,19 +134,21 @@ export function useDrowsinessDetection() {
       const ctx = audioContextRef.current;
       if (ctx.state === "suspended") void ctx.resume();
 
-      // Siren effect: sweep between two frequencies
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.type = "sawtooth";
-      osc.frequency.setValueAtTime(600, ctx.currentTime);
-      osc.frequency.linearRampToValueAtTime(1200, ctx.currentTime + 0.3);
-      osc.frequency.linearRampToValueAtTime(600, ctx.currentTime + 0.6);
-      gain.gain.setValueAtTime(0.18, ctx.currentTime);
-      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.7);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.7);
+      // Triple-beep alarm pattern
+      const t = ctx.currentTime;
+      for (let i = 0; i < 3; i++) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.type = "square";
+        osc.frequency.value = 1400;
+        const start = t + i * 0.15;
+        gain.gain.setValueAtTime(0.15, start);
+        gain.gain.setValueAtTime(0, start + 0.1);
+        osc.start(start);
+        osc.stop(start + 0.1);
+      }
     } catch {
       // Ignore audio issues silently
     }
